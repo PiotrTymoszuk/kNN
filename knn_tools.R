@@ -1,9 +1,13 @@
 # This script provides functions to implement the k-NN algorithm
 # for any distance measure provided by the package philentropy
+# contains also few functions to make and asses predictions with naive Bayes
+# on categorical data
 
   require(philentropy)
   require(tidyverse)
   require(tibble)
+  require(e1071)
+  require(coxed)
   
 # helper functions -----
   
@@ -32,17 +36,52 @@
       
     
   }
+  
+# naive Bayes prediction ------
+  
+  naive_bayes <- function(train, test_vec, outcome, type = 'class', ...) {
+    
+    ## makes prediction using naiveBayes() function provided by e1071 package
+    ## handles both single- and mult-row data frames. ... are argmunents passed on
+    ## to the mother naiveBayes function
+    
+    test_formula <- paste(outcome, '~.', sep = '') %>% 
+      as.formula
+    
+    ## training the Bayes model
+    
+    trained_model <- naiveBayes(formula = test_formula, 
+                                data = train, ...)
+    
+    ## prediction
+    
+    prediction <- predict(trained_model, 
+                          newdata = test_vec, 
+                          type = type)
+    
+    pred_tbl <- tibble(prediction = prediction, 
+                       test_set_id = rownames(test_vec)) %>% 
+      set_names(c(outcome, 
+                  'test_set_id'))
+    
+    return(pred_tbl)
+    
+  }
 
-# knn porediction and testing functions -----  
+# knn prediction -----  
 
-  knn <- function(train, test_vec, k, outcome,  method = 'jaccard', predict = T, include_poisson = F, ...){
+  knn <- function(train, test_vec, outcome, k = 5,  method = 'jaccard', predict = T, 
+                  kernel_fun = function(x) 1, ...){
     
     ## chooses the nearest neighbors or 
     ## predicts the feature (outcome) value for the given vector of features based on the k-nearest neighbors
     ## the solution modified from: 
-    # https://stackoverflow.com/questions/50428127/implementing-knn-with-different-distance-metrics-using-r
-    ## works for binary variables. If needed, Poisson test may be made on the voting results
-    ## handles multiple data frame as a test vector by recursion
+    ## https://stackoverflow.com/questions/50428127/implementing-knn-with-different-distance-metrics-using-r
+    ## works for any factorized variables. Kernel function specified by the user allows for weighted voting
+    
+    
+    
+    ## handles multiple-row data frame as a test vector by recursion
     
     
     if(any(class(test_vec) == 'data.frame') & nrow(test_vec) > 1) {
@@ -52,9 +91,9 @@
                                 test_vec = test_vec[x, ], 
                                 k = k, 
                                 outcome = outcome, 
-                                method = method, 
-                                predict = predict, 
-                                include_poisson = include_poisson, 
+                                method = method,
+                                kernel_fun = kernel_fun, 
+                                predict = T, 
                                 ...))
       
       pred_results <- pred_results %>% 
@@ -63,6 +102,8 @@
       return(pred_results)
       
     }
+    
+    ## distance calculation
     
     test_wo_outcome <- test_vec[, names(test_vec) != outcome]
     
@@ -86,7 +127,10 @@
       mutate(outcome = train[[outcome]]) %>% 
       set_names(c('ID_train', 
                   'distance', 
-                  outcome))
+                  outcome)) %>% 
+      mutate(weighted_vote = kernel_fun(distance))
+    
+    ## identificaiton of the NNs
     
     neigh <- dist_storage %>% 
       top_n(n = k, 
@@ -98,47 +142,38 @@
       
     } else {
       
-      ## voting
+      ## voting 
       
-      decision_stat <- mean(neigh[[outcome]])
+      voting_sum_tbl <- neigh %>% 
+        group_by(.data[[outcome]]) %>% 
+        dplyr::summarise(vote_sum = sum(weighted_vote)) %>%
+        filter(vote_sum == max(vote_sum))
       
-      prediction <- ifelse(decision_stat == 0.5, 
-                           sample(c(1, 0), 1), 
-                           ifelse(decision_stat > 0.5, 1, 0))
-      
-      if(include_poisson) {
+      if(nrow(voting_sum_tbl) == 1) {
         
-        ## voting certainty obtained by Poisson test
-        
-        pred_certain <- poisson.test(c(sum(neigh[[outcome]]), 
-                                       length(neigh[[outcome]]) - sum(neigh[[outcome]])))
-        
-        pred_tbl <- tibble(prediction = prediction, 
-                           decision_stat = decision_stat, 
-                           p_val = pred_certain$p.value) %>% 
-          set_names(c(outcome, 
-                      'voting_result', 
-                      'p_value'))
+        return(voting_sum_tbl)
         
       } else {
         
-        pred_tbl <- tibble(prediction = prediction, 
-                           decision_stat = decision_stat) %>% 
-          set_names(c(outcome, 
-                      'voting_result'))
+        tie_break <- sample(1:nrow(voting_sum_tbl), 
+                            size = 1)
+        
+        return(voting_sum_tbl[1, ])
+        
         
       }
-      
-      return(pred_tbl)
       
     }
     
   }
   
-  check_accuracy <- function(train, test_vec, k, outcome, method = 'jaccard', detailed = F, ...) {
+# accuracy testing ------
+  
+  check_accuracy <- function(train, test_vec, outcome, pred_fun = 'knn', detailed = F, ...) {
     
-    ## compares the predictions with the real results
-    ## returns either a summary table or detailed results
+    ## compares the predictions by the given predicting function with the real results
+    ## returns either a summary table or detailed results. ... specifies additional arguments passed
+    ## to the preicting function
     
     if(is.null(rownames(train)) | is.null(rownames(train))) {
       
@@ -148,19 +183,36 @@
     
     if(nrow(test_vec) == 1) {
       
-      stop('To calculate prediction statistics, a test data set with more observation is required (nrow > 1)')
+      stop('To calculate prediction statistics, a test data set with more observations is required (nrow > 1)')
       
     }
     
-    prediction <- knn(train = train, 
-                      test_vec = test_vec, 
-                      k = k, 
-                      outcome = outcome, 
-                      method = method, 
-                      include_poisson = F, ...) %>% 
-      set_names(c('pred_outcome', 
-                  'voting_result',  
-                  'test_set_id'))
+    ## making predictions
+
+    if(pred_fun == 'knn') {
+      
+      prediction <- knn(train = train, 
+                        test_vec = test_vec, 
+                        outcome = outcome, ...) %>% 
+        set_names(c('pred_outcome', 
+                    'voting_sum',  
+                    'test_set_id'))
+      
+    } else if(pred_fun == 'naive_bayes') {
+      
+      prediction <- naive_bayes(train = train, 
+                                test_vec = test_vec, 
+                                outcome = outcome, ...) %>% 
+        set_names(c('pred_outcome', 
+                    'test_set_id'))
+      
+    } else {
+      
+      stop('Please specify the prediction function. Currently: knn or naive_bayes')
+      
+    }
+    
+   ## comparing them with the true outcome
     
     real_outcome <- test_vec %>% 
       rownames_to_column('test_set_id') %>% 
@@ -218,14 +270,19 @@
   }
   
 # Serial testing of the prediction quality with multiple random training/test splits -----
-  
-  test_knn <- function(boot_split_lst, k, outcome, method = 'jaccard', generate_random = F, .parallel = T, ...) {
+
+  test_accuracy <- function(boot_split_lst, outcome, pred_fun = 'knn', 
+                            generate_random = F, exp_estimate = median, ci_method = 'percentile', 
+                            .parallel = T, ...) {
     
-    ## calculates sensitivity and specificity of the k-NN approach
+    ## calculates sensitivity and specificity of the k-NN pr naiveBayes approach
     ## given the list of training/test. Generate_random: a set of coin-toss predictions
     ## in the for the test sets is generated and sensitivity, specificity, correctness and error
     ## rate calculated and the significance of the k-NN prediction stats (better than random)
-    ## calculated with Wilcoxon test
+    ## calculated with Wilcoxon test ... are arguments passed to the predicting function.
+    ## The ci_methods defining the way, CI's are calculated encompass the standard percentile method
+    ## and bca provided by coxed package. exp_estimate defines how the expected value should
+    ## be computed: e.g. as median or mean of the bootstraped results.
     
     if(.parallel) {
       
@@ -236,27 +293,42 @@
       qc_results <- boot_split_lst %>% 
         future_map_dfr(function(x) check_accuracy(train = x$train,
                                                   test_vec = x$test,  
-                                                  k = k, 
                                                   outcome = outcome, 
-                                                  method = method, ...), 
+                                                  pred_fun = pred_fun, 
+                                                  detailed = F, ...), 
                        .options = furrr_options(seed = T))
       
       plan('sequential')
       
     } else {
-
+      
       qc_results <- boot_split_lst %>% 
         map_dfr(function(x) check_accuracy(train = x$train,
                                            test_vec = x$test,  
-                                           k = k, 
-                                           outcome = outcome, ...))
+                                           outcome = outcome, 
+                                           pred_fun = pred_fun, 
+                                           detailed = F, ...))
+      
+    }
+    
+    if(ci_method == 'percentile') {
+      
+      ci_fun <- function(x) quantile(x, c(0.025, 0.975))
+      
+    } else if(ci_method == 'bca') {
+      
+      ci_fun <- bca
+      
+    } else {
+      
+      stop('Undefined CI calculation method. Currently supported: percentile and bca')
       
     }
     
     summary_qc <- qc_results %>% 
-      map_dfr(quantile, 
-              c(0.5, 0.025, 0.975)) %>% 
-      set_names(c('median', 'lower_ci', 'upper_ci')) %>% 
+      map_dfr(function(x) c(exp_estimate(x), 
+                            ci_fun(x)) %>% 
+                set_names(c('expected', 'lower_ci', 'upper_ci'))) %>% 
       mutate(stat = names(qc_results))
     
     if(!generate_random) {
@@ -274,9 +346,9 @@
         map_dfr(function(x) calculate_pred_stats(x)$stats)
       
       rand_summary_qc <- rand_results %>% 
-        map_dfr(quantile, 
-                c(0.5, 0.025, 0.975)) %>% 
-        set_names(c('median', 'lower_ci', 'upper_ci')) %>% 
+        map_dfr(function(x) c(exp_estimate(x), 
+                              ci_fun(x)) %>% 
+                  set_names(c('expected', 'lower_ci', 'upper_ci'))) %>% 
         mutate(stat = names(rand_results))
       
       ## testing whether the Se, Sp and rate values are better than random: Wilcoxon test
@@ -292,12 +364,12 @@
                   rand_results = rand_results, 
                   summary = summary_qc, 
                   rand_summary = rand_summary_qc, 
-                  significance = wilcox_test))
-
+                  significance = wilcox_test) %>% 
+               map(mutate, 
+                   pred_method = pred_fun))
+      
     }
     
   }
-
-
-
   
+# END -----
