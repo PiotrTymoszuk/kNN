@@ -16,25 +16,38 @@
     ## classifies the prediction results as a tp (true positive), tn (true negative)
     ## fp (false positive), fn (false negative), out of bag (oob) and correct.
     ## calculates prediction stats: sensitivity, specificity
-    ## error and correct rate
+    ## error and correct rate - for a binary response
+    ## For a factor response, only the correct/oob classification is performed
     
-    class_tbl <- prediction_outcome_tbl %>% 
-      mutate(tp = (pred_outcome == 1 & true_outcome == 1), 
-             tn = (pred_outcome == 0 & true_outcome == 0), 
-             fp = (pred_outcome == 1 & true_outcome == 0), 
-             fn = (pred_outcome == 0 & true_outcome == 1), 
-             oob = fp|fn, 
-             correct = tp|tn)
-    
-    stat_tbl <- tibble(Se = sum(class_tbl$tp)/sum(class_tbl$true_outcome), 
-                       Sp = sum(class_tbl$tn)/(nrow(class_tbl) - sum(class_tbl$true_outcome)), 
-                       error_rate = sum(class_tbl$oob)/nrow(class_tbl), 
-                       correct_rate = sum(class_tbl$correct)/nrow(class_tbl))
+    if(all(levels(factor(prediction_outcome_tbl$pred_outcome)) == c(0, 1))) {
+      
+      class_tbl <- prediction_outcome_tbl %>% 
+        mutate(tp = (pred_outcome == 1 & true_outcome == 1), 
+               tn = (pred_outcome == 0 & true_outcome == 0), 
+               fp = (pred_outcome == 1 & true_outcome == 0), 
+               fn = (pred_outcome == 0 & true_outcome == 1), 
+               oob = fp|fn, 
+               correct = tp|tn)
+      
+      stat_tbl <- tibble(Se = sum(class_tbl$tp)/sum(class_tbl$true_outcome), 
+                         Sp = sum(class_tbl$tn)/(nrow(class_tbl) - sum(class_tbl$true_outcome)), 
+                         error_rate = sum(class_tbl$oob)/nrow(class_tbl), 
+                         correct_rate = sum(class_tbl$correct)/nrow(class_tbl))
+      
+    } else {
+      
+      class_tbl <- prediction_outcome_tbl %>% 
+        mutate(correct = (pred_outcome == true_outcome), 
+               oob = (pred_outcome != true_outcome))
+      
+      stat_tbl <- tibble(error_rate = sum(class_tbl$oob)/nrow(class_tbl), 
+                         correct_rate = sum(class_tbl$correct)/nrow(class_tbl))
+      
+    }
     
     return(list(result_class = class_tbl, 
                 stats = stat_tbl))
       
-    
   }
   
 # naive Bayes prediction ------
@@ -228,8 +241,8 @@
 
     if(detailed) {
       
-      return(pred_results = pred_stats$result_class, 
-             stats = pred_stats$stats)
+      return(list(pred_results = pred_stats$result_class, 
+                  stats = pred_stats$stats))
       
     } else {
       
@@ -340,7 +353,7 @@
       
       rand_results <- boot_split_lst %>% 
         map(function(x) tibble(true_outcome = x$test[[outcome]], 
-                               pred_outcome = sample(c(0, 1), 
+                               pred_outcome = sample(levels(factor(x$test[[outcome]])), 
                                                      size = nrow(x$test), 
                                                      replace = T))) %>% 
         map_dfr(function(x) calculate_pred_stats(x)$stats)
