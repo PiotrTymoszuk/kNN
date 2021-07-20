@@ -1,13 +1,15 @@
 # This script provides functions to implement the k-NN algorithm
 # for any distance measure provided by the package philentropy
 # contains also few functions to make and asses predictions with naive Bayes
-# on categorical data
+# and random Forest algorithm
+
 
   require(philentropy)
   require(tidyverse)
   require(tibble)
   require(e1071)
   require(coxed)
+  require(randomForest)
   
 # helper functions -----
   
@@ -22,6 +24,8 @@
     if(all(levels(factor(prediction_outcome_tbl$pred_outcome)) == c(0, 1))) {
       
       class_tbl <- prediction_outcome_tbl %>% 
+        mutate(pred_outcome = as.numeric(as.character(pred_outcome)), 
+               true_outcome = as.numeric(as.character(true_outcome))) %>% 
         mutate(tp = (pred_outcome == 1 & true_outcome == 1), 
                tn = (pred_outcome == 0 & true_outcome == 0), 
                fp = (pred_outcome == 1 & true_outcome == 0), 
@@ -32,7 +36,8 @@
       stat_tbl <- tibble(Se = sum(class_tbl$tp)/sum(class_tbl$true_outcome), 
                          Sp = sum(class_tbl$tn)/(nrow(class_tbl) - sum(class_tbl$true_outcome)), 
                          error_rate = sum(class_tbl$oob)/nrow(class_tbl), 
-                         correct_rate = sum(class_tbl$correct)/nrow(class_tbl))
+                         correct_rate = sum(class_tbl$correct)/nrow(class_tbl)) %>% 
+        mutate(youden_j = Se + Sp - 1)
       
     } else {
       
@@ -50,7 +55,7 @@
       
   }
   
-# naive Bayes prediction ------
+# naive Bayes and random forest prediction functions ------
   
   naive_bayes <- function(train, test_vec, outcome, type = 'class', ...) {
     
@@ -71,6 +76,34 @@
     prediction <- predict(trained_model, 
                           newdata = test_vec, 
                           type = type)
+    
+    pred_tbl <- tibble(prediction = prediction, 
+                       test_set_id = rownames(test_vec)) %>% 
+      set_names(c(outcome, 
+                  'test_set_id'))
+    
+    return(pred_tbl)
+    
+  }
+  
+  random_forest <- function(train, test_vec, outcome, ...) {
+    
+    ## makes prediction using randomForest() function provided by randomForest package
+    ## handles both single- and mult-row data frames. ... are argmunents passed on
+    ## to the mother randomForest function
+    
+    test_formula <- paste(outcome, '~.', sep = '') %>% 
+      as.formula
+    
+    ## training the Bayes model
+    
+    trained_model <- randomForest(formula = test_formula, 
+                                  data = train, ...)
+    
+    ## prediction
+    
+    prediction <- predict(trained_model, 
+                          newdata = test_vec)
     
     pred_tbl <- tibble(prediction = prediction, 
                        test_set_id = rownames(test_vec)) %>% 
@@ -219,9 +252,17 @@
         set_names(c('pred_outcome', 
                     'test_set_id'))
       
+    } else if(pred_fun == 'random_forest') {
+      
+      prediction <- random_forest(train = train, 
+                                  test_vec = test_vec, 
+                                  outcome = outcome, ...) %>% 
+        set_names(c('pred_outcome', 
+                    'test_set_id'))
+      
     } else {
       
-      stop('Please specify the prediction function. Currently: knn or naive_bayes')
+      stop('Please specify the prediction function. Currently: knn, naive_bayes or random_forest')
       
     }
     
