@@ -86,11 +86,12 @@
     
   }
   
-  random_forest <- function(train, test_vec, outcome, ...) {
+  random_forest <- function(train, test_vec, outcome, return_model = F, ...) {
     
     ## makes prediction using randomForest() function provided by randomForest package
     ## handles both single- and mult-row data frames. ... are argmunents passed on
     ## to the mother randomForest function
+    ## can return the model in addtion to the predictions
     
     test_formula <- paste(outcome, '~.', sep = '') %>% 
       as.formula
@@ -110,7 +111,16 @@
       set_names(c(outcome, 
                   'test_set_id'))
     
-    return(pred_tbl)
+    if(return_model) {
+      
+      return(list(model = trained_model, 
+                  prediction = pred_tbl))
+      
+    } else {
+      
+      return(pred_tbl)
+      
+    }
     
   }
 
@@ -215,11 +225,12 @@
   
 # accuracy testing ------
   
-  check_accuracy <- function(train, test_vec, outcome, pred_fun = 'knn', detailed = F, ...) {
+  check_accuracy <- function(train, test_vec, outcome, pred_fun = 'knn', regression = F, detailed = F, ...) {
     
     ## compares the predictions by the given predicting function with the real results
     ## returns either a summary table or detailed results. ... specifies additional arguments passed
-    ## to the preicting function
+    ## to the predicting function.
+    ## For regression predictions: a simple table with the predicted and actual value is returned
     
     if(is.null(rownames(train)) | is.null(rownames(train))) {
       
@@ -256,7 +267,8 @@
       
       prediction <- random_forest(train = train, 
                                   test_vec = test_vec, 
-                                  outcome = outcome, ...) %>% 
+                                  outcome = outcome, 
+                                  return_model = F, ...) %>% 
         set_names(c('pred_outcome', 
                     'test_set_id'))
       
@@ -277,7 +289,39 @@
     
     pred_stats <- left_join(prediction, 
                             real_outcome, 
-                            by = 'test_set_id') %>% 
+                            by = 'test_set_id')
+    
+    if(regression) {
+      
+      pred_stats <- pred_stats %>% 
+        mutate(y = true_outcome, 
+               .fitted = pred_outcome, 
+               .resid = pred_outcome - true_outcome, 
+               .sq.resid = .resid ^ 2, 
+               .std.resid = scale(.resid)[, 1], 
+               .sq.std.resid = .std.resid ^ 2, 
+               .candidate_missfit = ifelse(abs(.std.resid) > qnorm(0.975), 
+                                           'yes', 
+                                           'no'))
+      
+      measures <- list(mse = mean(pred_stats$.sq.resid), 
+                       mae = mean(abs(pred_stats$.resid)), 
+                       corr_pearson = cor(pred_stats$y, 
+                                          pred_stats$.fitted, 
+                                          method = 'pearson'), 
+                       corr_spearman = cor(pred_stats$y, 
+                                          pred_stats$.fitted, 
+                                          method = 'spearman'), 
+                       rsq = 1 - mean(pred_stats$.sq.resid)/var(pred_stats$y), 
+                       n_complete = nrow(pred_stats)) %>% 
+        as_tibble
+    
+      return(list(fit = pred_stats, 
+                  measures = measures))
+      
+    }
+    
+    pred_stats <- pred_stats %>% 
       calculate_pred_stats
 
     if(detailed) {
@@ -326,7 +370,7 @@
 # Serial testing of the prediction quality with multiple random training/test splits -----
 
   test_accuracy <- function(boot_split_lst, outcome, pred_fun = 'knn', 
-                            generate_random = F, exp_estimate = median, ci_method = 'percentile', 
+                            generate_random = F, exp_estimate = mean, ci_method = 'percentile', 
                             .parallel = T, ...) {
     
     ## calculates sensitivity and specificity of the k-NN pr naiveBayes approach
